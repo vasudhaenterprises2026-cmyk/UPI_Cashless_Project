@@ -1,0 +1,306 @@
+-- Phase 1 schema for SRS & SHREEM BUSINESS OS
+-- PostgreSQL / Supabase ready
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TYPE public.business_type AS ENUM ('SRS_ENTERPRISES', 'SHREEM_SM_FOOD', 'GROUP_SHARED');
+CREATE TYPE public.product_category AS ENUM ('BATTER', 'RAW_MATERIAL', 'PACKAGING', 'PACKAGED_GOOD', 'OTHER');
+CREATE TYPE public.stock_movement_type AS ENUM ('OPENING_BALANCE', 'PURCHASE', 'PRODUCTION_OUTPUT', 'CONSUMPTION', 'TRANSFER_IN', 'TRANSFER_OUT', 'DISPATCH', 'RETURN', 'ADJUSTMENT', 'WASTAGE', 'SALE', 'REVERSE');
+CREATE TYPE public.order_status AS ENUM ('DRAFT', 'APPROVED', 'DISPATCH_PENDING', 'PARTIALLY_DISPATCHED', 'DISPATCHED', 'INVOICED', 'PAID_PARTIAL', 'PAID', 'CANCELLED');
+CREATE TYPE public.role_name AS ENUM ('OWNER_SUPER_ADMIN', 'PRODUCTION_MANAGER', 'MARKETING_EMPLOYEE', 'DELIVERY_EMPLOYEE', 'ACCOUNTANT');
+
+CREATE TABLE public.businesses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    business_type public.business_type NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    full_name TEXT NOT NULL,
+    phone TEXT,
+    avatar_url TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.role_permissions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    role_name public.role_name NOT NULL,
+    permission_key TEXT NOT NULL,
+    description TEXT,
+    UNIQUE (role_name, permission_key)
+);
+
+CREATE TABLE public.user_business_roles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    role_name public.role_name NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, business_id, role_name)
+);
+
+CREATE TABLE public.products (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    category public.product_category NOT NULL,
+    unit_of_measure TEXT NOT NULL,
+    pack_size NUMERIC(12,2) DEFAULT 0,
+    is_packaged_product BOOLEAN NOT NULL DEFAULT FALSE,
+    shelf_life_days INTEGER,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (business_id, product_code)
+);
+
+CREATE TABLE public.product_variants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    variant_name TEXT NOT NULL,
+    unit_of_measure TEXT NOT NULL,
+    pack_size NUMERIC(12,2) NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (product_id, variant_name)
+);
+
+CREATE TABLE public.shops (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    address TEXT,
+    area TEXT,
+    contact_name TEXT,
+    phone TEXT,
+    email TEXT,
+    assigned_salesperson_id UUID REFERENCES public.profiles(id),
+    customer_status TEXT NOT NULL DEFAULT 'ACTIVE',
+    credit_terms_days INTEGER DEFAULT 0,
+    credit_limit NUMERIC(14,2) DEFAULT 0,
+    outstanding_balance NUMERIC(14,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.shop_prices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shop_id UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    unit_price NUMERIC(14,2) NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_to TIMESTAMPTZ,
+    source TEXT NOT NULL DEFAULT 'MANUAL',
+    created_by UUID REFERENCES public.profiles(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (shop_id, product_id, valid_from)
+);
+
+CREATE TABLE public.inventory_locations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    location_type TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (business_id, name)
+);
+
+CREATE TABLE public.inventory_movements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    location_id UUID REFERENCES public.inventory_locations(id),
+    movement_type public.stock_movement_type NOT NULL,
+    quantity NUMERIC(14,4) NOT NULL,
+    unit_cost NUMERIC(14,4),
+    reference_type TEXT,
+    reference_id UUID,
+    created_by UUID REFERENCES public.profiles(id),
+    approved_by UUID REFERENCES public.profiles(id),
+    approved_at TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (reference_type, reference_id, movement_type)
+);
+
+CREATE TABLE public.inventory_balances (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    location_id UUID NOT NULL REFERENCES public.inventory_locations(id) ON DELETE CASCADE,
+    quantity_on_hand NUMERIC(14,4) NOT NULL DEFAULT 0,
+    low_stock_threshold NUMERIC(14,4) DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (business_id, product_id, location_id)
+);
+
+CREATE TABLE public.orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    shop_id UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+    order_number TEXT NOT NULL UNIQUE,
+    status public.order_status NOT NULL DEFAULT 'DRAFT',
+    order_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_by UUID REFERENCES public.profiles(id),
+    total_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+    created_by UUID REFERENCES public.profiles(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.order_lines (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    quantity NUMERIC(14,4) NOT NULL,
+    unit_price NUMERIC(14,2) NOT NULL,
+    discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+    tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+    total_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.invoices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    order_id UUID REFERENCES public.orders(id),
+    invoice_number TEXT NOT NULL UNIQUE,
+    total_amount NUMERIC(14,2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by UUID REFERENCES public.profiles(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.expenses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    expense_category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    amount NUMERIC(14,2) NOT NULL,
+    incurred_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+    vendor TEXT,
+    payment_method TEXT,
+    reference_number TEXT,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'APPROVED',
+    created_by UUID REFERENCES public.profiles(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_id UUID REFERENCES public.businesses(id),
+    entity_type TEXT NOT NULL,
+    entity_id UUID,
+    action TEXT NOT NULL,
+    actor_id UUID REFERENCES public.profiles(id),
+    payload JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- seed roles
+INSERT INTO public.role_permissions (role_name, permission_key, description) VALUES
+('OWNER_SUPER_ADMIN', 'business.read_all', 'Read full data across both businesses'),
+('OWNER_SUPER_ADMIN', 'business.write_all', 'Manage all business records'),
+('OWNER_SUPER_ADMIN', 'financial.read_all', 'Access all financial reports'),
+('OWNER_SUPER_ADMIN', 'financial.write_all', 'Modify financial records'),
+('PRODUCTION_MANAGER', 'production.read', 'Read manufacturing records'),
+('PRODUCTION_MANAGER', 'production.write', 'Create and update production records'),
+('PRODUCTION_MANAGER', 'inventory.read', 'Read inventory and stock data'),
+('PRODUCTION_MANAGER', 'inventory.write', 'Adjust inventory and approve stock movements'),
+('MARKETING_EMPLOYEE', 'shop.read_assigned', 'Read assigned shops and prices'),
+('MARKETING_EMPLOYEE', 'orders.write_assigned', 'Create and manage assigned orders'),
+('DELIVERY_EMPLOYEE', 'delivery.read_assigned', 'Read assigned deliveries'),
+('DELIVERY_EMPLOYEE', 'delivery.write_assigned', 'Confirm dispatch and deliveries'),
+('ACCOUNTANT', 'financial.read_authorized', 'Read authorized financial data'),
+('ACCOUNTANT', 'financial.write_authorized', 'Manage authorized payments and expenses')
+ON CONFLICT (role_name, permission_key) DO NOTHING;
+
+-- seed required business records
+INSERT INTO public.businesses (name, code, business_type) VALUES
+('SRS Enterprises', 'SRS', 'SRS_ENTERPRISES'),
+('Shreem S.M Food', 'SHREEM', 'SHREEM_SM_FOOD')
+ON CONFLICT (code) DO NOTHING;
+
+-- seed the initial product catalog
+INSERT INTO public.products (business_id, name, product_code, category, unit_of_measure, pack_size, is_packaged_product, shelf_life_days)
+SELECT id, 'Idli & Dosa Batter', 'BATTER_IDLI_DOSA', 'BATTER', 'KG', 1, FALSE, 3
+FROM public.businesses WHERE code = 'SRS'
+UNION ALL
+SELECT id, 'Vada Batter', 'BATTER_VADA', 'BATTER', 'KG', 1, FALSE, 3
+FROM public.businesses WHERE code = 'SRS'
+UNION ALL
+SELECT id, 'Idli & Dosa Batter', 'BATTER_IDLI_DOSA', 'BATTER', 'KG', 1, FALSE, 3
+FROM public.businesses WHERE code = 'SHREEM'
+UNION ALL
+SELECT id, 'Vada Batter', 'BATTER_VADA', 'BATTER', 'KG', 1, FALSE, 3
+FROM public.businesses WHERE code = 'SHREEM'
+ON CONFLICT (business_id, product_code) DO NOTHING;
+
+-- simple trigger to update updated_at
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER businesses_updated_at
+BEFORE UPDATE ON public.businesses
+FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER shops_updated_at
+BEFORE UPDATE ON public.shops
+FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- RLS foundation (starter)
+ALTER TABLE public.businesses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_business_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shop_prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "allow_authenticated_users_to_view_catalog" ON public.products
+FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "allow_authenticated_users_to_view_businesses" ON public.businesses
+FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "profiles_are_visible_to_self" ON public.profiles
+FOR SELECT TO authenticated USING (auth.uid() = id);
+
+CREATE POLICY "user_business_roles_self_read" ON public.user_business_roles
+FOR SELECT TO authenticated USING (user_id = auth.uid());
+
+CREATE POLICY "shops_read_all_authenticated" ON public.shops
+FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "inventory_read_all_authenticated" ON public.inventory_movements
+FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "orders_read_all_authenticated" ON public.orders
+FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "expenses_read_all_authenticated" ON public.expenses
+FOR SELECT TO authenticated USING (true);
+
+-- note:
+-- production-quality policies should be expanded with business-specific role checks
+-- and service-role-only administrative operations for secure financial updates.
